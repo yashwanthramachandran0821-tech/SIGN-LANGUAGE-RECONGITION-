@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language Translator | AI-Powered Communication</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤟</text></svg>">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <i class="fas fa-hands"></i>
+                <h1>Sign Language Translator</h1>
+            </div>
+            <p class="subtitle">Bridging communication between Deaf and hearing communities using AI</p>
+            
+            <div class="status-bar">
+                <div class="status-item" id="modelStatus">
+                    <i class="fas fa-brain"></i>
+                    <span>Model: Loading...</span>
+                </div>
+                <div class="status-item" id="cameraStatus">
+                    <i class="fas fa-camera"></i>
+                    <span>Camera: Offline</span>
+                </div>
+                <div class="status-item" id="recordingStatus">
+                    <i class="fas fa-circle"></i>
+                    <span>Recording: Paused</span>
+                </div>
+                <div class="status-item">
+                    <i class="fas fa-language"></i>
+                    <span>Language: ASL</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Column: Camera and Recognition -->
+            <div class="section">
+                <h2><i class="fas fa-video"></i> Live Recognition</h2>
+                
+                <div class="camera-section">
+                    <div class="video-container">
+                        <video id="webcam" autoplay playsinline></video>
+                        <canvas id="canvas" class="d-none"></canvas>
+                        
+                        <div class="video-overlay">
+                            <div class="video-status" id="videoStatus">OFF</div>
+                            <div class="video-fps">FPS: <span id="fpsCounter">0</span></div>
+                        </div>
+                    </div>
+                    
+                    <div class="controls">
+                        <button id="startBtn" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Start Camera
+                        </button>
+                        <button id="captureBtn" class="btn btn-success" disabled>
+                            <i class="fas fa-camera"></i> Capture Sign
+                        </button>
+                        <button id="continuousBtn" class="btn btn-warning">
+                            <i class="fas fa-sync"></i> Continuous Mode
+                        </button>
+                        <button id="clearBtn" class="btn btn-danger">
+                            <i class="fas fa-trash"></i> Clear Text
+                        </button>
+                        <button id="saveBtn" class="btn btn-info">
+                            <i class="fas fa-save"></i> Save Translation
+                        </button>
+                    </div>
+                    
+                    <div class="prediction-result">
+                        <div class="result-header">
+                            <h3>Translated Text:</h3>
+                            <div class="confidence-meter">
+                                <div class="meter-label">
+                                    <span>Confidence</span>
+                                    <span id="confidenceValue">0%</span>
+                                </div>
+                                <div class="meter-bar">
+                                    <div class="meter-fill" id="confidenceBar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="predictionText" class="result-text">
+                            Your translated text will appear here...
+                        </div>
+                        
+                        <div class="top-predictions" id="topPredictions">
+                            <!-- Prediction chips will appear here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Text Input and Translation -->
+            <div class="section">
+                <h2><i class="fas fa-exchange-alt"></i> Text to Sign</h2>
+                
+                <div class="text-input-section">
+                    <textarea id="textInput" placeholder="Type your message here to translate to sign language..."></textarea>
+                    
+                    <div class="controls">
+                        <button id="translateBtn" class="btn btn-primary">
+                            <i class="fas fa-hands"></i> Show Signs
+                        </button>
+                        <button id="speakBtn" class="btn btn-info">
+                            <i class="fas fa-volume-up"></i> Speak Text
+                        </button>
+                    </div>
+                </div>
+                
+                <div id="signOutput" class="sign-output">
+                    <!-- Sign instructions will appear here -->
+                </div>
+            </div>
+
+            <!-- History Section -->
+            <div class="section history-section">
+                <h2><i class="fas fa-history"></i> Prediction History</h2>
+                <button id="clearHistoryBtn" class="btn btn-danger" style="float: right; margin-top: -45px;">
+                    <i class="fas fa-trash"></i> Clear History
+                </button>
+                <div id="historyList" class="history-list">
+                    <!-- History items will appear here -->
+                </div>
+            </div>
+
+            <!-- Settings Section -->
+            <div class="section">
+                <h2><i class="fas fa-cog"></i> Settings</h2>
+                
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label for="confidenceThreshold">
+                            <i class="fas fa-chart-line"></i> Confidence Threshold
+                        </label>
+                        <input type="range" id="confidenceThreshold" min="10" max="100" value="70">
+                        <div class="setting-value" id="thresholdValue">70%</div>
+                        <small>Minimum confidence to accept predictions</small>
+                    </div>
+                    
+                    <div class="setting-item">
+                        <label for="autoClear">
+                            <i class="fas fa-broom"></i> Auto-clear Long Text
+                        </label>
+                        <input type="checkbox" id="autoClear">
+                        <small>Automatically clear text when it gets too long</small>
+                    </div>
+                    
+                    <div class="setting-item">
+                        <label for="languageSelect">
+                            <i class="fas fa-globe"></i> Sign Language
+                        </label>
+                        <select id="languageSelect" class="form-select">
+                            <option value="ASL">American Sign Language (ASL)</option>
+                            <option value="BSL">British Sign Language (BSL)</option>
+                            <option value="ISL">Indian Sign Language (ISL)</option>
+                        </select>
+                        <small>Select the sign language variant</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Reference Section -->
+            <div class="section reference-section">
+                <h2><i class="fas fa-book"></i> Quick Reference - ASL Alphabet</h2>
+                <div class="reference-grid" id="referenceGrid">
+                    <!-- Generated by JavaScript -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer>
+            <p>Sign Language Translator Prototype v1.0 | Made with ❤️ for Accessibility</p>
+            
+            <div class="footer-links">
+                <a href="#" class="footer-link"><i class="fas fa-question-circle"></i> Help</a>
+                <a href="#" class="footer-link"><i class="fas fa-book"></i> Documentation</a>
+                <a href="#" class="footer-link"><i class="fas fa-code"></i> API</a>
+                <a href="#" class="footer-link"><i class="fas fa-bug"></i> Report Issue</a>
+                <a href="#" class="footer-link"><i class="fas fa-star"></i> GitHub</a>
+            </div>
+            
+            <p class="disclaimer">
+                Note: This is a prototype for demonstration purposes. Accuracy may vary based on lighting,
+                camera quality, and hand positioning. For production use, train with more diverse data.
+            </p>
+            
+            <p style="margin-top: 15px; font-size: 0.8rem; opacity: 0.6;">
+                <i class="fas fa-code"></i> Powered by TensorFlow, MediaPipe, and Flask
+            </p>
+        </footer>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    
+    <!-- Reference Grid Generator -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+            const referenceGrid = document.getElementById('referenceGrid');
+            
+            letters.forEach(letter => {
+                const item = document.createElement('div');
+                item.className = 'reference-item';
+                item.innerHTML = `
+                    <div class="reference-letter">${letter}</div>
+                    <div class="reference-desc">${getLetterDescription(letter)}</div>
+                `;
+                
+                // Click to add letter to text
+                item.addEventListener('click', () => {
+                    const textInput = document.getElementById('textInput');
+                    textInput.value += letter;
+                    textInput.focus();
+                });
+                
+                referenceGrid.appendChild(item);
+            });
+            
+            // Add special signs
+            const specialSigns = [
+                { char: '👍', name: 'Thumbs Up', desc: 'Approval/Good' },
+                { char: '👎', name: 'Thumbs Down', desc: 'Disapproval/Bad' },
+                { char: '✌️', name: 'Peace', desc: 'Peace/Victory' },
+                { char: '👌', name: 'OK', desc: 'Okay/Good' },
+                { char: '🤟', name: 'ILY', desc: 'I Love You' },
+                { char: '👏', name: 'Clap', desc: 'Applause' }
+            ];
+            
+            specialSigns.forEach(sign => {
+                const item = document.createElement('div');
+                item.className = 'reference-item';
+                item.innerHTML = `
+                    <div class="reference-letter" style="font-size: 2rem;">${sign.char}</div>
+                    <div class="reference-desc">${sign.name}<br><small>${sign.desc}</small></div>
+                `;
+                referenceGrid.appendChild(item);
+            });
+            
+            function getLetterDescription(letter) {
+                const descriptions = {
+                    'A': 'Fist with thumb alongside',
+                    'B': 'All fingers extended',
+                    'C': 'C-shaped hand',
+                    'D': 'Index finger point',
+                    'E': 'Fingers folded',
+                    'F': 'OK sign variant',
+                    'G': 'Index finger hook',
+                    'H': 'Index & middle finger',
+                    'I': 'Pinky finger up',
+                    'J': 'J motion with pinky',
+                    'K': 'Peace sign variant',
+                    'L': 'L shape',
+                    'M': 'Three fingers down',
+                    'N': 'Two fingers down',
+                    'O': 'O shape',
+                    'P': 'K shape reversed',
+                    'Q': 'G shape down',
+                    'R': 'Crossed fingers',
+                    'S': 'Fist with thumb over',
+                    'T': 'Fist with thumb between',
+                    'U': 'Two fingers up',
+                    'V': 'Peace sign',
+                    'W': 'Three fingers up',
+                    'X': 'Bent index',
+                    'Y': 'Thumb & pinky out',
+                    'Z': 'Z motion'
+                };
+                return descriptions[letter] || 'ASL Letter';
+            }
+        });
+    </script>
+</body>
+</html>
