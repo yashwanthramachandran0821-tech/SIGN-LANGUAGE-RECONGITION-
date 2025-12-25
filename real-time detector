@@ -1,0 +1,523 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import mediapipe as mp
+from collections import deque
+import time
+import threading
+import queue
+import sys
+import os
+
+class SignLanguageRealtimeDetector:
+    def __init__(self, model_path='models/asl_model.h5'):
+        """Initialize real-time detector"""
+        self.model = None
+        self.class_names = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+                           'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+                           'space', 'del', 'nothing']
+        
+        # Load model
+        if os.path.exists(model_path):
+            print("📁 Loading trained model...")
+            self.model = keras.models.load_model(model_path)
+            print("✅ Model loaded successfully")
+        else:
+            print("⚠️ Model not found. Using MediaPipe only.")
+        
+        # Initialize MediaPipe
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.5
+        )
+        self.mp_draw = mp.solutions.drawing_utils
+        
+        # State variables
+        self.current_text = ""
+        self.is_recording = False
+        self.is_running = False
+        self.prediction_history = deque(maxlen=10)
+        self.confidence_history = deque(maxlen=10)
+        
+        # Performance tracking
+        self.fps = 0
+        self.frame_count = 0
+        self.start_time = time.time()
+        
+        # Threading for prediction
+        self.prediction_queue = queue.Queue()
+        self.result_queue = queue.Queue()
+        
+        # GUI variables
+        self.window_name = "Sign Language Translator"
+        self.font = cv2.FONT_HERSHEY_SIMPLEX
+        
+        # Colors
+        self.colors = {
+            'text': (255, 255, 255),
+            'highlight': (0, 255, 0),
+            'warning': (0, 165, 255),
+            'error': (0, 0, 255),
+            'info': (255, 255, 0),
+            'landmark': (0, 255, 0),
+            'connection': (255, 0, 0)
+        }
+    
+    def preprocess_frame(self, frame):
+        """Preprocess frame for prediction"""
+        # Convert BGR to RGB
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Process with MediaPipe
+        results = self.hands.process(rgb)
+        
+        # Draw hand landmarks
+        annotated_frame = frame.copy()
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                self.mp_draw.draw_landmarks(
+                    annotated_frame,
+                    hand_landmarks,
+                    self.mp_hands.HAND_CONNECTIONS,
+                    self.mp_draw.DrawingSpec(color=self.colors['landmark'], thickness=2, circle_radius=2),
+                    self.mp_draw.DrawingSpec(color=self.colors['connection'], thickness=2, circle_radius=2)
+                )
+        
+        # Extract hand region for CNN
+        if self.model and results.multi_hand_landmarks:
+            # Get hand bounding box
+            h, w = frame.shape[:2]
+            x_coords = [lm.x * w for lm in results.multi_hand_landmarks[0].landmark]
+            y_coords = [lm.y * h for lm in results.multi_hand_landmarks[0].landmark]
+            
+            x_min, x_max = int(min(x_coords)), int(max(x_coords))
+            y_min, y_max = int(min(y_coords)), int(max(y_coords))
+            
+            # Add padding
+            padding = 20
+            x_min = max(0, x_min - padding)
+            x_max = min(w, x_max + padding)
+            y_min = max(0, y_min - padding)
+            y_max = min(h, y_max + padding)
+            
+            # Extract ROI
+            hand_roi = frame[y_min:y_max, x_min:x_max]
+            
+            if hand_roi.size > 0:
+                # Resize for model
+                hand_roi = cv2.resize(hand_roi, (64, 64))
+                hand_roi = hand_roi.astype('float32') / 255.0
+                hand_roi = np.expand_dims(hand_roi, axis=0)
+                
+                return hand_roi, results, annotated_frame, (x_min, y_min, x_max, y_max)
+        
+        return None, results, annotated_frame, None
+    
+    def predict_frame(self, hand_roi):
+        """Predict sign from hand ROI"""
+        if self.model is None or hand_roi is None:
+            return None, 0.0
+        
+        try:
+            predictions = self.model.predict(hand_roi, verbose=0)
+            predicted_idx = np.argmax(predictions[0])
+            confidence = float(predictions[0][predicted_idx])
+            predicted_class = self.class_names[predicted_idx]
+            
+            return predicted_class, confidence
+        except:
+            return None, 0.0
+    
+    def draw_ui(self, frame, prediction, confidence, bbox, fps):
+        """Draw UI elements on frame"""
+        h, w = frame.shape[:2]
+        
+        # Draw header
+        cv2.rectangle(frame, (0, 0), (w, 80), (40, 40, 40), -1)
+        cv2.putText(frame, "SIGN LANGUAGE TRANSLATOR", (10, 30),
+                   self.font, 0.7, self.colors['text'], 2)
+        
+        # Status indicator
+        status = "RECORDING" if self.is_recording else "PAUSED"
+        status_color = self.colors['highlight'] if self.is_recording else self.colors['warning']
+        cv2.putText(frame, f"Status: {status}", (10, 60),
+                   self.font, 0.6, status_color, 2)
+        
+        # Draw hand bounding box
+        if bbox:
+            x_min, y_min, x_max, y_max = bbox
+            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), self.colors['highlight'], 2)
+        
+        # Prediction display
+        if prediction and confidence > 0.5:
+            # Draw prediction box
+            pred_text = f"{prediction} ({confidence:.1%})"
+            text_size = cv2.getTextSize(pred_text, self.font, 0.7, 2)[0]
+            text_x = w - text_size[0] - 20
+            text_y = 40
+            
+            cv2.rectangle(frame, (text_x - 10, text_y - 30),
+                         (text_x + text_size[0] + 10, text_y + 10),
+                         (40, 40, 40), -1)
+            cv2.putText(frame, pred_text, (text_x, text_y),
+                       self.font, 0.7, self.colors['highlight'], 2)
+            
+            # Confidence bar
+            bar_width = int(200 * confidence)
+            cv2.rectangle(frame, (w - 220, 70), (w - 20, 90), (60, 60, 60), -1)
+            cv2.rectangle(frame, (w - 220, 70), (w - 220 + bar_width, 90),
+                         self.colors['highlight'], -1)
+            cv2.putText(frame, "Confidence", (w - 220, 65),
+                       self.font, 0.4, self.colors['text'], 1)
+        
+        # Translated text display
+        cv2.rectangle(frame, (0, h - 120), (w, h), (30, 30, 30), -1)
+        cv2.putText(frame, "Translated Text:", (10, h - 90),
+                   self.font, 0.6, self.colors['text'], 2)
+        
+        # Wrap text if too long
+        display_text = self.current_text[-50:]  # Show last 50 characters
+        cv2.putText(frame, display_text, (10, h - 50),
+                   self.font, 0.7, self.colors['highlight'], 2)
+        
+        # FPS counter
+        cv2.putText(frame, f"FPS: {fps:.1f}", (w - 100, h - 10),
+                   self.font, 0.5, self.colors['info'], 1)
+        
+        # Instructions
+        cv2.putText(frame, "R: Record/Stop  C: Clear  Q: Quit", (10, h - 10),
+                   self.font, 0.4, self.colors['text'], 1)
+        
+        return frame
+    
+    def process_prediction(self, prediction, confidence):
+        """Process prediction and update text"""
+        if prediction and confidence > 0.7:
+            self.prediction_history.append(prediction)
+            self.confidence_history.append(confidence)
+            
+            # Get most common prediction from history
+            if len(self.prediction_history) >= 5:
+                from collections import Counter
+                most_common = Counter(self.prediction_history).most_common(1)[0][0]
+                
+                if self.is_recording:
+                    if most_common == 'space':
+                        self.current_text += ' '
+                    elif most_common == 'del':
+                        self.current_text = self.current_text[:-1]
+                    elif most_common not in ['nothing', 'del']:
+                        self.current_text += most_common
+                    
+                    # Clear history after adding to text
+                    if most_common not in ['space', 'del']:
+                        self.prediction_history.clear()
+    
+    def calculate_fps(self):
+        """Calculate FPS"""
+        self.frame_count += 1
+        elapsed_time = time.time() - self.start_time
+        
+        if elapsed_time > 1.0:
+            self.fps = self.frame_count / elapsed_time
+            self.frame_count = 0
+            self.start_time = time.time()
+        
+        return self.fps
+    
+    def run(self):
+        """Main run loop"""
+        print("🎥 Starting real-time detection...")
+        print("📋 Controls:")
+        print("   R - Start/Stop recording")
+        print("   C - Clear text")
+        print("   S - Save translation")
+        print("   Q - Quit")
+        
+        # Initialize camera
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("❌ Error: Could not open camera")
+            return
+        
+        # Set camera properties
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        self.is_running = True
+        
+        # Create window
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.window_name, 1280, 720)
+        
+        while self.is_running:
+            # Read frame
+            ret, frame = cap.read()
+            if not ret:
+                print("❌ Error: Could not read frame")
+                break
+            
+            # Flip horizontally for mirror effect
+            frame = cv2.flip(frame, 1)
+            
+            # Preprocess frame
+            hand_roi, results, annotated_frame, bbox = self.preprocess_frame(frame)
+            
+            # Predict if hand detected
+            prediction = None
+            confidence = 0.0
+            
+            if hand_roi is not None:
+                prediction, confidence = self.predict_frame(hand_roi)
+                self.process_prediction(prediction, confidence)
+            
+            # Calculate FPS
+            fps = self.calculate_fps()
+            
+            # Draw UI
+            display_frame = self.draw_ui(annotated_frame, prediction, confidence, bbox, fps)
+            
+            # Show frame
+            cv2.imshow(self.window_name, display_frame)
+            
+            # Handle keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q'):
+                break
+            elif key == ord('r'):
+                self.is_recording = not self.is_recording
+                status = "started" if self.is_recording else "stopped"
+                print(f"⏺️ Recording {status}")
+            elif key == ord('c'):
+                self.current_text = ""
+                self.prediction_history.clear()
+                print("🗑️ Text cleared")
+            elif key == ord('s'):
+                if self.current_text:
+                    self.save_translation()
+            elif key == 27:  # ESC key
+                break
+        
+        # Cleanup
+        cap.release()
+        cv2.destroyAllWindows()
+        self.is_running = False
+        print("👋 Application closed")
+    
+    def save_translation(self):
+        """Save current translation to file"""
+        if not self.current_text:
+            return
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"translation_{timestamp}.txt"
+        
+        with open(filename, 'w') as f:
+            f.write(f"Sign Language Translation\n")
+            f.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Text: {self.current_text}\n\n")
+        
+        print(f"💾 Translation saved to {filename}")
+        return filename
+    
+    def run_with_gui(self):
+        """Run with enhanced GUI"""
+        try:
+            import tkinter as tk
+            from tkinter import ttk, messagebox
+            from PIL import Image, ImageTk
+            
+            class SignLanguageGUI:
+                def __init__(self, detector):
+                    self.detector = detector
+                    self.root = tk.Tk()
+                    self.root.title("Sign Language Translator Pro")
+                    self.root.geometry("1200x800")
+                    
+                    self.setup_ui()
+                    self.is_running = False
+                    self.cap = None
+                    
+                def setup_ui(self):
+                    """Setup Tkinter GUI"""
+                    # Main container
+                    main_frame = ttk.Frame(self.root, padding="10")
+                    main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+                    
+                    # Video display
+                    video_frame = ttk.LabelFrame(main_frame, text="Camera Feed", padding="5")
+                    video_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+                    
+                    self.video_label = ttk.Label(video_frame)
+                    self.video_label.grid(row=0, column=0)
+                    
+                    # Control panel
+                    control_frame = ttk.LabelFrame(main_frame, text="Controls", padding="10")
+                    control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+                    
+                    # Buttons
+                    ttk.Button(control_frame, text="Start Camera", command=self.start_camera).grid(row=0, column=0, padx=5, pady=5)
+                    ttk.Button(control_frame, text="Stop Camera", command=self.stop_camera).grid(row=0, column=1, padx=5, pady=5)
+                    ttk.Button(control_frame, text="Start Recording", command=self.start_recording).grid(row=1, column=0, padx=5, pady=5)
+                    ttk.Button(control_frame, text="Stop Recording", command=self.stop_recording).grid(row=1, column=1, padx=5, pady=5)
+                    ttk.Button(control_frame, text="Clear Text", command=self.clear_text).grid(row=2, column=0, padx=5, pady=5)
+                    ttk.Button(control_frame, text="Save Translation", command=self.save_translation).grid(row=2, column=1, padx=5, pady=5)
+                    
+                    # Status display
+                    status_frame = ttk.LabelFrame(main_frame, text="Status", padding="10")
+                    status_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+                    
+                    self.status_label = ttk.Label(status_frame, text="Camera: Stopped | Recording: Off")
+                    self.status_label.grid(row=0, column=0)
+                    
+                    self.fps_label = ttk.Label(status_frame, text="FPS: 0.0")
+                    self.fps_label.grid(row=1, column=0)
+                    
+                    self.prediction_label = ttk.Label(status_frame, text="Prediction: None")
+                    self.prediction_label.grid(row=2, column=0)
+                    
+                    # Translation display
+                    translation_frame = ttk.LabelFrame(main_frame, text="Translated Text", padding="10")
+                    translation_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+                    
+                    self.translation_text = tk.Text(translation_frame, height=5, width=100)
+                    self.translation_text.grid(row=0, column=0)
+                    
+                    scrollbar = ttk.Scrollbar(translation_frame, orient="vertical", command=self.translation_text.yview)
+                    scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+                    self.translation_text.configure(yscrollcommand=scrollbar.set)
+                    
+                    # Configure grid weights
+                    self.root.columnconfigure(0, weight=1)
+                    self.root.rowconfigure(0, weight=1)
+                    main_frame.columnconfigure(0, weight=1)
+                    main_frame.columnconfigure(1, weight=1)
+                    main_frame.rowconfigure(0, weight=3)
+                    main_frame.rowconfigure(1, weight=1)
+                    main_frame.rowconfigure(2, weight=1)
+                    
+                def start_camera(self):
+                    """Start camera capture"""
+                    if not self.is_running:
+                        self.cap = cv2.VideoCapture(0)
+                        if self.cap.isOpened():
+                            self.is_running = True
+                            self.update_frame()
+                            self.status_label.config(text="Camera: Running | Recording: Off")
+                        else:
+                            messagebox.showerror("Error", "Could not open camera")
+                
+                def stop_camera(self):
+                    """Stop camera capture"""
+                    self.is_running = False
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
+                    self.status_label.config(text="Camera: Stopped | Recording: Off")
+                
+                def start_recording(self):
+                    """Start recording signs"""
+                    self.detector.is_recording = True
+                    self.status_label.config(text="Camera: Running | Recording: On")
+                
+                def stop_recording(self):
+                    """Stop recording signs"""
+                    self.detector.is_recording = False
+                    self.status_label.config(text="Camera: Running | Recording: Off")
+                
+                def clear_text(self):
+                    """Clear translated text"""
+                    self.detector.current_text = ""
+                    self.translation_text.delete(1.0, tk.END)
+                
+                def save_translation(self):
+                    """Save translation to file"""
+                    filename = self.detector.save_translation()
+                    if filename:
+                        messagebox.showinfo("Success", f"Translation saved to {filename}")
+                
+                def update_frame(self):
+                    """Update video frame"""
+                    if self.is_running and self.cap:
+                        ret, frame = self.cap.read()
+                        if ret:
+                            # Process frame
+                            frame = cv2.flip(frame, 1)
+                            hand_roi, results, annotated_frame, bbox = self.detector.preprocess_frame(frame)
+                            
+                            # Predict
+                            prediction = None
+                            confidence = 0.0
+                            if hand_roi is not None:
+                                prediction, confidence = self.detector.predict_frame(hand_roi)
+                                self.detector.process_prediction(prediction, confidence)
+                            
+                            # Update FPS
+                            fps = self.detector.calculate_fps()
+                            
+                            # Update labels
+                            self.fps_label.config(text=f"FPS: {fps:.1f}")
+                            if prediction:
+                                self.prediction_label.config(
+                                    text=f"Prediction: {prediction} ({confidence:.1%})"
+                                )
+                            
+                            # Update translation text
+                            self.translation_text.delete(1.0, tk.END)
+                            self.translation_text.insert(1.0, self.detector.current_text)
+                            
+                            # Convert frame for display
+                            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                            img = Image.fromarray(rgb_frame)
+                            img = img.resize((800, 600), Image.Resampling.LANCZOS)
+                            img_tk = ImageTk.PhotoImage(image=img)
+                            
+                            # Update video label
+                            self.video_label.config(image=img_tk)
+                            self.video_label.image = img_tk
+                            
+                        # Schedule next update
+                        self.root.after(10, self.update_frame)
+                
+                def run(self):
+                    """Run the GUI"""
+                    self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+                    self.root.mainloop()
+                
+                def on_closing(self):
+                    """Handle window closing"""
+                    self.stop_camera()
+                    self.root.destroy()
+                    self.detector.is_running = False
+            
+            # Run GUI
+            gui = SignLanguageGUI(self)
+            gui.run()
+            
+        except ImportError:
+            print("⚠️ Tkinter not available. Using OpenCV window instead.")
+            self.run()
+
+def main():
+    """Main function"""
+    print("=" * 50)
+    print("🤖 Sign Language Realtime Detector")
+    print("=" * 50)
+    
+    # Create detector
+    detector = SignLanguageRealtimeDetector()
+    
+    # Run detector
+    try:
+        detector.run_with_gui()
+    except:
+        detector.run()
+
+if __name__ == "__main__":
+    main()
