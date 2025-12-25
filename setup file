@@ -1,0 +1,72 @@
+import os
+import sys
+import subprocess
+import platform
+
+def check_and_install():
+    """Check and install required packages"""
+    print("🚀 Setting up Sign Language Translator...")
+    
+    # Create directories
+    directories = [
+        'models',
+        'data/train',
+        'data/test',
+        'static/css',
+        'static/js',
+        'templates',
+        'utils'
+    ]
+    
+    for directory in directories:
+        os.makedirs(directory, exist_ok=True)
+        print(f"📁 Created directory: {directory}")
+    
+    # Check Python version
+    python_version = platform.python_version()
+    print(f"🐍 Python version: {python_version}")
+    
+    if sys.version_info < (3, 8):
+        print("❌ Python 3.8 or higher is required")
+        sys.exit(1)
+    
+    # Install requirements
+    print("📦 Installing dependencies...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+        print("✅ Dependencies installed successfully!")
+    except subprocess.CalledProcessError:
+        print("❌ Failed to install dependencies")
+        print("📋 Please run: pip install -r requirements.txt")
+        sys.exit(1)
+    
+    # Download sample data if needed
+    download_sample_data()
+    
+    print("\n🎉 Setup completed successfully!")
+    print("\n📖 To run the application:")
+    print("1. 🏋️‍♂️ Train the model: python train_model.py")
+    print("2. 🌐 Start web app: python app.py")
+    print("3. 📱 Start API server: python api.py")
+    print("4. 🎥 Real-time detection: python realtime_detector.py")
+
+def download_sample_data():
+    """Download sample ASL dataset"""
+    import urllib.request
+    import zipfile
+    
+    # URL for sample ASL dataset (small version)
+    sample_url = "https://github.com/loicmarie/sign-language-digits-dataset/archive/refs/heads/master.zip"
+    
+    print("📥 Downloading sample dataset...")
+    try:
+        urllib.request.urlretrieve(sample_url, "sample_data.zip")
+        with zipfile.ZipFile("sample_data.zip", 'r') as zip_ref:
+            zip_ref.extractall("data/")
+        os.remove("sample_data.zip")
+        print("✅ Sample dataset downloaded!")
+    except:
+        print("⚠️ Could not download sample data. Using synthetic data for training.")
+
+if __name__ == "__main__":
+    check_and_install()
